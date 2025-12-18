@@ -2,18 +2,16 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
+#include <zlib.h>
 
 int main(int argc, char *argv[])
 {
-    // Flush after every std::cout / std::cerr
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     std::cerr << "Logs from your program will appear here!\n";
 
-    // TODO: Uncomment the code below to pass the first stage
-    //
     if (argc < 2) {
         std::cerr << "No command provided.\n";
         return EXIT_FAILURE;
@@ -41,10 +39,66 @@ int main(int argc, char *argv[])
             std::cerr << e.what() << '\n';
             return EXIT_FAILURE;
         }
-    } else {
+    } 
+    
+    // --------- ADDED CAT-FILE ----------
+    else if (command == "cat-file") {
+
+        // Expected: cat-file -p <sha>
+        if (argc != 4 || std::string(argv[2]) != "-p") {
+            std::cerr << "Invalid arguments\n";
+            return EXIT_FAILURE;
+        }
+
+        std::string sha = argv[3];
+
+        // Build object path
+        std::string dir = sha.substr(0, 2);
+        std::string file = sha.substr(2);
+        std::string path = ".git/objects/" + dir + "/" + file;
+
+        // Open object file in binary mode
+        std::ifstream in(path, std::ios::binary);
+        if (!in) {
+            std::cerr << "Object not found\n";
+            return EXIT_FAILURE;
+        }
+
+        // Read compressed data
+        std::vector<char> compressed(
+            (std::istreambuf_iterator<char>(in)),
+            std::istreambuf_iterator<char>()
+        );
+
+        // Prepare buffer for decompression
+        std::vector<char> decompressed(1024 * 1024);
+        uLongf decompressedSize = decompressed.size();
+
+        // Decompress using zlib
+        if (uncompress(
+                (Bytef*)decompressed.data(), &decompressedSize,
+                (Bytef*)compressed.data(), compressed.size()) != Z_OK) {
+            std::cerr << "Decompression failed\n";
+            return EXIT_FAILURE;
+        }
+
+        // Find null byte separating header and content
+        size_t i = 0;
+        while (i < decompressedSize && decompressed[i] != '\0') {
+            i++;
+        }
+
+        // Print content only
+        std::cout.write(
+            decompressed.data() + i + 1,
+            decompressedSize - i - 1
+        );
+    }
+    
+    else {
         std::cerr << "Unknown command " << command << '\n';
         return EXIT_FAILURE;
-     }
-    //
+    }
+
     return EXIT_SUCCESS;
 }
