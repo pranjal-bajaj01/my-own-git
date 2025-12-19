@@ -3,168 +3,182 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <sstream>
+#include <iomanip>
 #include <zlib.h>
 #include <openssl/sha.h>
 
+using namespace std;
 
-int main(int argc, char *argv[])
-{
-    std::cout << std::unitbuf;
-    std::cerr << std::unitbuf;
+/* ---------- Helpers ---------- */
 
-    std::cerr << "Logs from your program will appear here!\n";
-
-    if (argc < 2) {
-        std::cerr << "No command provided.\n";
-        return EXIT_FAILURE;
+string toHex(const unsigned char* bytes, int len) {
+    ostringstream ss;
+    for (int i = 0; i < len; i++) {
+        ss << hex << setw(2) << setfill('0') << (int)bytes[i];
     }
-    
-    std::string command = argv[1];
-    
-    if (command == "init") {
-        try {
-            std::filesystem::create_directory(".git");
-            std::filesystem::create_directory(".git/objects");
-            std::filesystem::create_directory(".git/refs");
-    
-            std::ofstream headFile(".git/HEAD");
-            if (headFile.is_open()) {
-                headFile << "ref: refs/heads/main\n";
-                headFile.close();
-            } else {
-                std::cerr << "Failed to create .git/HEAD file.\n";
-                return EXIT_FAILURE;
-            }
-    
-            std::cout << "Initialized git directory\n";
-        } catch (const std::filesystem::filesystem_error& e) {
-            std::cerr << e.what() << '\n';
-            return EXIT_FAILURE;
-        }
-    } 
-    else if (command == "hash-object") {
-
-    // Expected: hash-object -w <file>
-    if (argc != 4 || std::string(argv[2]) != "-w") {
-        std::cerr << "Invalid arguments\n";
-        return EXIT_FAILURE;
-    }
-
-    std::string filePath = argv[3];
-
-    // 1. Read file in binary mode
-    std::ifstream file(filePath, std::ios::binary);
-    if (!file) {
-        std::cerr << "Cannot open file\n";
-        return EXIT_FAILURE;
-    }
-
-    std::string content(
-        (std::istreambuf_iterator<char>(file)),
-        std::istreambuf_iterator<char>()
-    );
-
-    // 2. Create blob data: "blob <size>\0<content>"
-    std::string header = "blob " + std::to_string(content.size()) + '\0';
-    std::string store = header + content;
-
-    // 3. Compute SHA-1
-    unsigned char hash[SHA_DIGEST_LENGTH];
-    SHA1(
-        reinterpret_cast<const unsigned char*>(store.data()),
-        store.size(),
-        hash
-    );
-
-    std::ostringstream shaStream;
-    for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
-        shaStream << std::hex << std::setw(2) << std::setfill('0')
-                  << (int)hash[i];
-    }
-    std::string sha = shaStream.str();
-
-    // Print hash (required by Codecrafters)
-    std::cout << sha << "\n";
-
-    // 4. Create object directory
-    std::string dir = ".git/objects/" + sha.substr(0, 2);
-    std::string objFile = dir + "/" + sha.substr(2);
-    std::filesystem::create_directories(dir);
-
-    // 5. Compress blob using zlib
-    uLongf compressedSize = compressBound(store.size());
-    std::vector<unsigned char> compressed(compressedSize);
-
-    if (compress(
-            compressed.data(), &compressedSize,
-            reinterpret_cast<const Bytef*>(store.data()),
-            store.size()) != Z_OK) {
-        std::cerr << "Compression failed\n";
-        return EXIT_FAILURE;
-    }
-
-    // 6. Write compressed object
-    std::ofstream out(objFile, std::ios::binary);
-    out.write(reinterpret_cast<char*>(compressed.data()), compressedSize);
+    return ss.str();
 }
 
-    
-    // --------- ADDED CAT-FILE ----------
-    else if (command == "cat-file") {
+bool readObject(const string& sha, vector<char>& decompressed, uLongf& size) {
+    string path = ".git/objects/" + sha.substr(0, 2) + "/" + sha.substr(2);
+    ifstream in(path, ios::binary);
+    if (!in) return false;
 
-        // Expected: cat-file -p <sha>
-        if (argc != 4 || std::string(argv[2]) != "-p") {
-            std::cerr << "Invalid arguments\n";
-            return EXIT_FAILURE;
-        }
+    vector<char> compressed(
+        (istreambuf_iterator<char>(in)),
+        istreambuf_iterator<char>()
+    );
 
-        std::string sha = argv[3];
+    decompressed.resize(1024 * 1024);
+    size = decompressed.size();
 
-        // Build object path
-        std::string dir = sha.substr(0, 2);
-        std::string file = sha.substr(2);
-        std::string path = ".git/objects/" + dir + "/" + file;
+    return uncompress(
+        (Bytef*)decompressed.data(), &size,
+        (Bytef*)compressed.data(), compressed.size()
+    ) == Z_OK;
+}
 
-        // Open object file in binary mode
-        std::ifstream in(path, std::ios::binary);
-        if (!in) {
-            std::cerr << "Object not found\n";
-            return EXIT_FAILURE;
-        }
+/* ---------- Main ---------- */
 
-        // Read compressed data
-        std::vector<char> compressed(
-            (std::istreambuf_iterator<char>(in)),
-            std::istreambuf_iterator<char>()
-        );
+int main(int argc, char* argv[]) {
+    cout << unitbuf;
+    cerr << unitbuf;
 
-        // Prepare buffer for decompression
-        std::vector<char> decompressed(1024 * 1024);
-        uLongf decompressedSize = decompressed.size();
-
-        // Decompress using zlib
-        if (uncompress(
-                (Bytef*)decompressed.data(), &decompressedSize,
-                (Bytef*)compressed.data(), compressed.size()) != Z_OK) {
-            std::cerr << "Decompression failed\n";
-            return EXIT_FAILURE;
-        }
-
-        // Find null byte separating header and content
-        size_t i = 0;
-        while (i < decompressedSize && decompressed[i] != '\0') {
-            i++;
-        }
-
-        // Print content only
-        std::cout.write(
-            decompressed.data() + i + 1,
-            decompressedSize - i - 1
-        );
+    if (argc < 2) {
+        cerr << "No command provided\n";
+        return EXIT_FAILURE;
     }
-    
+
+    string command = argv[1];
+
+    /* ---------- init ---------- */
+    if (command == "init") {
+        filesystem::create_directory(".git");
+        filesystem::create_directory(".git/objects");
+        filesystem::create_directory(".git/refs");
+
+        ofstream head(".git/HEAD");
+        head << "ref: refs/heads/main\n";
+
+        cout << "Initialized git directory\n";
+    }
+
+    /* ---------- hash-object ---------- */
+    else if (command == "hash-object") {
+        if (argc != 4 || string(argv[2]) != "-w") {
+            cerr << "Invalid arguments\n";
+            return EXIT_FAILURE;
+        }
+
+        ifstream file(argv[3], ios::binary);
+        if (!file) return EXIT_FAILURE;
+
+        string content(
+            (istreambuf_iterator<char>(file)),
+            istreambuf_iterator<char>()
+        );
+
+        string header = "blob " + to_string(content.size()) + '\0';
+        string store = header + content;
+
+        unsigned char hash[SHA_DIGEST_LENGTH];
+        SHA1((unsigned char*)store.data(), store.size(), hash);
+
+        string sha = toHex(hash, 20);
+        cout << sha << "\n";
+
+        filesystem::create_directories(".git/objects/" + sha.substr(0, 2));
+        string path = ".git/objects/" + sha.substr(0, 2) + "/" + sha.substr(2);
+
+        uLongf compressedSize = compressBound(store.size());
+        vector<unsigned char> compressed(compressedSize);
+
+        compress(
+            compressed.data(), &compressedSize,
+            (Bytef*)store.data(), store.size()
+        );
+
+        ofstream out(path, ios::binary);
+        out.write((char*)compressed.data(), compressedSize);
+    }
+
+    /* ---------- cat-file ---------- */
+    else if (command == "cat-file") {
+        if (argc != 4 || string(argv[2]) != "-p") {
+            cerr << "Invalid arguments\n";
+            return EXIT_FAILURE;
+        }
+
+        vector<char> data;
+        uLongf size;
+        if (!readObject(argv[3], data, size)) {
+            cerr << "Object not found\n";
+            return EXIT_FAILURE;
+        }
+
+        size_t i = 0;
+        while (data[i] != '\0') i++;
+        cout.write(data.data() + i + 1, size - i - 1);
+    }
+
+    /* ---------- ls-tree ---------- */
+    else if (command == "ls-tree") {
+
+    bool nameOnly = false;
+    string sha;
+
+    if (argc == 4 && string(argv[2]) == "--name-only") {
+        nameOnly = true;
+        sha = argv[3];
+    } else if (argc == 3) {
+        sha = argv[2];
+    } else {
+        cerr << "Invalid arguments\n";
+        return EXIT_FAILURE;
+    }
+
+    vector<char> data;
+    uLongf size;
+    if (!readObject(sha, data, size)) {
+        cerr << "Object not found\n";
+        return EXIT_FAILURE;
+    }
+
+    size_t pos = 0;
+    while (data[pos] != '\0') pos++;
+    pos++;
+
+    while (pos < size) {
+        size_t space = pos;
+        while (data[space] != ' ') space++;
+        string mode(data.data() + pos, space - pos);
+        pos = space + 1;
+
+        size_t nullPos = pos;
+        while (data[nullPos] != '\0') nullPos++;
+        string name(data.data() + pos, nullPos - pos);
+        pos = nullPos + 1;
+
+        string entrySha = toHex(
+            (unsigned char*)data.data() + pos, 20
+        );
+        pos += 20;
+
+        string type = (mode == "040000") ? "tree" : "blob";
+
+        if (nameOnly) {
+            cout << name << "\n";
+        } else {
+            cout << mode << " " << type << " " << entrySha
+                 << "\t" << name << "\n";
+        }
+    }
+}
+
+
     else {
-        std::cerr << "Unknown command " << command << '\n';
+        cerr << "Unknown command\n";
         return EXIT_FAILURE;
     }
 
