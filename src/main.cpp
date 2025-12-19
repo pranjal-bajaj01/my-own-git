@@ -5,7 +5,7 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
-#include <algorithm>   // <-- ADDED
+#include <algorithm>
 #include <zlib.h>
 #include <openssl/sha.h>
 
@@ -40,7 +40,7 @@ bool readObject(const string& sha, vector<char>& decompressed, uLongf& size) {
     ) == Z_OK;
 }
 
-/* ---------- write-tree (ADDED) ---------- */
+/* ---------- write-tree ---------- */
 
 string writeTree(const filesystem::path& dir) {
     vector<filesystem::directory_entry> entries;
@@ -138,6 +138,43 @@ string writeTree(const filesystem::path& dir) {
     return treeSha;
 }
 
+/* ---------- commit-tree (STAGE 5 ADDED) ---------- */
+
+string commitTree(const string& treeSha,
+                  const string& parentSha,
+                  const string& message) {
+    string content;
+
+    content += "tree " + treeSha + "\n";
+    content += "parent " + parentSha + "\n";
+    content += "author Test User <test@example.com> 0 +0000\n";
+    content += "committer Test User <test@example.com> 0 +0000\n\n";
+    content += message + "\n";
+
+    string header = "commit " + to_string(content.size()) + '\0';
+    string store = header + content;
+
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1((unsigned char*)store.data(), store.size(), hash);
+    string commitSha = toHex(hash, 20);
+
+    filesystem::create_directories(".git/objects/" + commitSha.substr(0, 2));
+    string path = ".git/objects/" + commitSha.substr(0, 2) + "/" + commitSha.substr(2);
+
+    uLongf compressedSize = compressBound(store.size());
+    vector<unsigned char> compressed(compressedSize);
+
+    compress(
+        compressed.data(), &compressedSize,
+        (Bytef*)store.data(), store.size()
+    );
+
+    ofstream out(path, ios::binary);
+    out.write((char*)compressed.data(), compressedSize);
+
+    return commitSha;
+}
+
 /* ---------- Main ---------- */
 
 int main(int argc, char* argv[]) {
@@ -151,7 +188,6 @@ int main(int argc, char* argv[]) {
 
     string command = argv[1];
 
-    /* ---------- init ---------- */
     if (command == "init") {
         filesystem::create_directory(".git");
         filesystem::create_directory(".git/objects");
@@ -163,16 +199,10 @@ int main(int argc, char* argv[]) {
         cout << "Initialized git directory\n";
     }
 
-    /* ---------- hash-object ---------- */
     else if (command == "hash-object") {
-        if (argc != 4 || string(argv[2]) != "-w") {
-            cerr << "Invalid arguments\n";
-            return EXIT_FAILURE;
-        }
+        if (argc != 4 || string(argv[2]) != "-w") return EXIT_FAILURE;
 
         ifstream file(argv[3], ios::binary);
-        if (!file) return EXIT_FAILURE;
-
         string content(
             (istreambuf_iterator<char>(file)),
             istreambuf_iterator<char>()
@@ -183,9 +213,7 @@ int main(int argc, char* argv[]) {
 
         unsigned char hash[SHA_DIGEST_LENGTH];
         SHA1((unsigned char*)store.data(), store.size(), hash);
-
         string sha = toHex(hash, 20);
-        cout << sha << "\n";
 
         filesystem::create_directories(".git/objects/" + sha.substr(0, 2));
         string path = ".git/objects/" + sha.substr(0, 2) + "/" + sha.substr(2);
@@ -200,49 +228,34 @@ int main(int argc, char* argv[]) {
 
         ofstream out(path, ios::binary);
         out.write((char*)compressed.data(), compressedSize);
+
+        cout << sha << "\n";
     }
 
-    /* ---------- cat-file ---------- */
     else if (command == "cat-file") {
-        if (argc != 4 || string(argv[2]) != "-p") {
-            cerr << "Invalid arguments\n";
-            return EXIT_FAILURE;
-        }
-
         vector<char> data;
         uLongf size;
-        if (!readObject(argv[3], data, size)) {
-            cerr << "Object not found\n";
-            return EXIT_FAILURE;
-        }
+        readObject(argv[3], data, size);
 
         size_t i = 0;
         while (data[i] != '\0') i++;
         cout.write(data.data() + i + 1, size - i - 1);
     }
 
-    /* ---------- ls-tree ---------- */
     else if (command == "ls-tree") {
-
         bool nameOnly = false;
         string sha;
 
         if (argc == 4 && string(argv[2]) == "--name-only") {
             nameOnly = true;
             sha = argv[3];
-        } else if (argc == 3) {
-            sha = argv[2];
         } else {
-            cerr << "Invalid arguments\n";
-            return EXIT_FAILURE;
+            sha = argv[2];
         }
 
         vector<char> data;
         uLongf size;
-        if (!readObject(sha, data, size)) {
-            cerr << "Object not found\n";
-            return EXIT_FAILURE;
-        }
+        readObject(sha, data, size);
 
         size_t pos = 0;
         while (data[pos] != '\0') pos++;
@@ -259,25 +272,34 @@ int main(int argc, char* argv[]) {
             string name(data.data() + pos, nullPos - pos);
             pos = nullPos + 1;
 
-            string entrySha = toHex(
-                (unsigned char*)data.data() + pos, 20
-            );
+            string entrySha = toHex((unsigned char*)data.data() + pos, 20);
             pos += 20;
-
-            string type = (mode == "40000") ? "tree" : "blob"; // <-- FIXED
 
             if (nameOnly) {
                 cout << name << "\n";
             } else {
+                string type = (mode == "40000") ? "tree" : "blob";
                 cout << mode << " " << type << " " << entrySha
                      << "\t" << name << "\n";
             }
         }
     }
 
-    /* ---------- write-tree (ADDED) ---------- */
     else if (command == "write-tree") {
         cout << writeTree(".") << "\n";
+    }
+
+    /* ---------- commit-tree command (STAGE 5 ADDED) ---------- */
+    else if (command == "commit-tree") {
+        string treeSha, parentSha, message;
+
+        for (int i = 2; i < argc; i++) {
+            if (string(argv[i]) == "-p") parentSha = argv[++i];
+            else if (string(argv[i]) == "-m") message = argv[++i];
+            else treeSha = argv[i];
+        }
+
+        cout << commitTree(treeSha, parentSha, message) << "\n";
     }
 
     else {
