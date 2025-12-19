@@ -1,15 +1,25 @@
 cmake_minimum_required(VERSION 3.13)
 
-project(codecrafters-git)
+project(git LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 23) # Enable the C++23 standard
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-file(GLOB_RECURSE SOURCE_FILES src/*.cpp src/*.hpp)
+add_executable(git
+    src/main.cpp
+)
 
+# --- REQUIRED SYSTEM LIBRARIES ---
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
 
-add_executable(git ${SOURCE_FILES})
+# libcurl is NOT always exported as CURL::libcurl in Codecrafters,
+# so we link it explicitly.
+find_library(CURL_LIB curl REQUIRED)
 
-target_link_libraries(git PRIVATE OpenSSL::Crypto)
-target_link_libraries(git PRIVATE ZLIB::ZLIB)
+target_link_libraries(git
+    ${CURL_LIB}
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    ZLIB::ZLIB
+)
