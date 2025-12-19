@@ -335,11 +335,8 @@ int main(int argc, char* argv[]) {
         string sha = n?argv[3]:argv[2];
         auto [_, d] = readObject(sha);
 
-/* 1️⃣ Skip "tree <size>\0" header */
-size_t pos = 0;  // START DIRECTLY AT FIRST ENTRY
+size_t pos = 0; 
 
-
-/* 2️⃣ Parse entries */
 while (pos < d.size()) {
     // mode
     size_t spacePos = pos;
@@ -378,4 +375,10 @@ while (pos < d.size()) {
         cloneRepo(argv[2], argv[3]);
         curl_global_cleanup();
     }
+    else {
+    cerr << "Unknown command: " << c << "\n";
+    cerr << "Supported commands: init, hash-object, cat-file, ls-tree, write-tree, commit-tree, clone\n";
+    return EXIT_FAILURE;
+}
+
 }
