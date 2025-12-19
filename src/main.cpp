@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 #include <zlib.h>
+#include <openssl/sha.h>
+
 
 int main(int argc, char *argv[])
 {
@@ -40,6 +42,72 @@ int main(int argc, char *argv[])
             return EXIT_FAILURE;
         }
     } 
+    else if (command == "hash-object") {
+
+    // Expected: hash-object -w <file>
+    if (argc != 4 || std::string(argv[2]) != "-w") {
+        std::cerr << "Invalid arguments\n";
+        return EXIT_FAILURE;
+    }
+
+    std::string filePath = argv[3];
+
+    // 1. Read file in binary mode
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file) {
+        std::cerr << "Cannot open file\n";
+        return EXIT_FAILURE;
+    }
+
+    std::string content(
+        (std::istreambuf_iterator<char>(file)),
+        std::istreambuf_iterator<char>()
+    );
+
+    // 2. Create blob data: "blob <size>\0<content>"
+    std::string header = "blob " + std::to_string(content.size()) + '\0';
+    std::string store = header + content;
+
+    // 3. Compute SHA-1
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1(
+        reinterpret_cast<const unsigned char*>(store.data()),
+        store.size(),
+        hash
+    );
+
+    std::ostringstream shaStream;
+    for (int i = 0; i < SHA_DIGEST_LENGTH; i++) {
+        shaStream << std::hex << std::setw(2) << std::setfill('0')
+                  << (int)hash[i];
+    }
+    std::string sha = shaStream.str();
+
+    // Print hash (required by Codecrafters)
+    std::cout << sha << "\n";
+
+    // 4. Create object directory
+    std::string dir = ".git/objects/" + sha.substr(0, 2);
+    std::string objFile = dir + "/" + sha.substr(2);
+    std::filesystem::create_directories(dir);
+
+    // 5. Compress blob using zlib
+    uLongf compressedSize = compressBound(store.size());
+    std::vector<unsigned char> compressed(compressedSize);
+
+    if (compress(
+            compressed.data(), &compressedSize,
+            reinterpret_cast<const Bytef*>(store.data()),
+            store.size()) != Z_OK) {
+        std::cerr << "Compression failed\n";
+        return EXIT_FAILURE;
+    }
+
+    // 6. Write compressed object
+    std::ofstream out(objFile, std::ios::binary);
+    out.write(reinterpret_cast<char*>(compressed.data()), compressedSize);
+}
+
     
     // --------- ADDED CAT-FILE ----------
     else if (command == "cat-file") {
