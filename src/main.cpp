@@ -5,6 +5,7 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <algorithm>   // <-- ADDED
 #include <zlib.h>
 #include <openssl/sha.h>
 
@@ -37,6 +38,104 @@ bool readObject(const string& sha, vector<char>& decompressed, uLongf& size) {
         (Bytef*)decompressed.data(), &size,
         (Bytef*)compressed.data(), compressed.size()
     ) == Z_OK;
+}
+
+/* ---------- write-tree (ADDED) ---------- */
+
+string writeTree(const filesystem::path& dir) {
+    vector<filesystem::directory_entry> entries;
+
+    for (auto& entry : filesystem::directory_iterator(dir)) {
+        if (entry.path().filename() == ".git") continue;
+        entries.push_back(entry);
+    }
+
+    sort(entries.begin(), entries.end(),
+         [](const auto& a, const auto& b) {
+             return a.path().filename().string() <
+                    b.path().filename().string();
+         });
+
+    string treeContent;
+
+    for (auto& entry : entries) {
+        string name = entry.path().filename().string();
+
+        if (entry.is_directory()) {
+            string subSha = writeTree(entry.path());
+
+            treeContent += "40000 " + name + '\0';
+
+            for (int i = 0; i < 20; i++) {
+                treeContent.push_back(
+                    (char)strtol(subSha.substr(i * 2, 2).c_str(), nullptr, 16)
+                );
+            }
+        }
+        else if (entry.is_regular_file()) {
+            ifstream file(entry.path(), ios::binary);
+            string content(
+                (istreambuf_iterator<char>(file)),
+                istreambuf_iterator<char>()
+            );
+
+            string header = "blob " + to_string(content.size()) + '\0';
+            string store = header + content;
+
+            unsigned char hash[SHA_DIGEST_LENGTH];
+            SHA1((unsigned char*)store.data(), store.size(), hash);
+            string blobSha = toHex(hash, 20);
+
+            filesystem::create_directories(".git/objects/" + blobSha.substr(0, 2));
+            string path = ".git/objects/" + blobSha.substr(0, 2) + "/" + blobSha.substr(2);
+
+            if (!filesystem::exists(path)) {
+                uLongf compressedSize = compressBound(store.size());
+                vector<unsigned char> compressed(compressedSize);
+
+                compress(
+                    compressed.data(), &compressedSize,
+                    (Bytef*)store.data(), store.size()
+                );
+
+                ofstream out(path, ios::binary);
+                out.write((char*)compressed.data(), compressedSize);
+            }
+
+            treeContent += "100644 " + name + '\0';
+
+            for (int i = 0; i < 20; i++) {
+                treeContent.push_back(
+                    (char)strtol(blobSha.substr(i * 2, 2).c_str(), nullptr, 16)
+                );
+            }
+        }
+    }
+
+    string header = "tree " + to_string(treeContent.size()) + '\0';
+    string store = header + treeContent;
+
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1((unsigned char*)store.data(), store.size(), hash);
+    string treeSha = toHex(hash, 20);
+
+    filesystem::create_directories(".git/objects/" + treeSha.substr(0, 2));
+    string path = ".git/objects/" + treeSha.substr(0, 2) + "/" + treeSha.substr(2);
+
+    if (!filesystem::exists(path)) {
+        uLongf compressedSize = compressBound(store.size());
+        vector<unsigned char> compressed(compressedSize);
+
+        compress(
+            compressed.data(), &compressedSize,
+            (Bytef*)store.data(), store.size()
+        );
+
+        ofstream out(path, ios::binary);
+        out.write((char*)compressed.data(), compressedSize);
+    }
+
+    return treeSha;
 }
 
 /* ---------- Main ---------- */
@@ -125,57 +224,61 @@ int main(int argc, char* argv[]) {
     /* ---------- ls-tree ---------- */
     else if (command == "ls-tree") {
 
-    bool nameOnly = false;
-    string sha;
+        bool nameOnly = false;
+        string sha;
 
-    if (argc == 4 && string(argv[2]) == "--name-only") {
-        nameOnly = true;
-        sha = argv[3];
-    } else if (argc == 3) {
-        sha = argv[2];
-    } else {
-        cerr << "Invalid arguments\n";
-        return EXIT_FAILURE;
-    }
-
-    vector<char> data;
-    uLongf size;
-    if (!readObject(sha, data, size)) {
-        cerr << "Object not found\n";
-        return EXIT_FAILURE;
-    }
-
-    size_t pos = 0;
-    while (data[pos] != '\0') pos++;
-    pos++;
-
-    while (pos < size) {
-        size_t space = pos;
-        while (data[space] != ' ') space++;
-        string mode(data.data() + pos, space - pos);
-        pos = space + 1;
-
-        size_t nullPos = pos;
-        while (data[nullPos] != '\0') nullPos++;
-        string name(data.data() + pos, nullPos - pos);
-        pos = nullPos + 1;
-
-        string entrySha = toHex(
-            (unsigned char*)data.data() + pos, 20
-        );
-        pos += 20;
-
-        string type = (mode == "040000") ? "tree" : "blob";
-
-        if (nameOnly) {
-            cout << name << "\n";
+        if (argc == 4 && string(argv[2]) == "--name-only") {
+            nameOnly = true;
+            sha = argv[3];
+        } else if (argc == 3) {
+            sha = argv[2];
         } else {
-            cout << mode << " " << type << " " << entrySha
-                 << "\t" << name << "\n";
+            cerr << "Invalid arguments\n";
+            return EXIT_FAILURE;
+        }
+
+        vector<char> data;
+        uLongf size;
+        if (!readObject(sha, data, size)) {
+            cerr << "Object not found\n";
+            return EXIT_FAILURE;
+        }
+
+        size_t pos = 0;
+        while (data[pos] != '\0') pos++;
+        pos++;
+
+        while (pos < size) {
+            size_t space = pos;
+            while (data[space] != ' ') space++;
+            string mode(data.data() + pos, space - pos);
+            pos = space + 1;
+
+            size_t nullPos = pos;
+            while (data[nullPos] != '\0') nullPos++;
+            string name(data.data() + pos, nullPos - pos);
+            pos = nullPos + 1;
+
+            string entrySha = toHex(
+                (unsigned char*)data.data() + pos, 20
+            );
+            pos += 20;
+
+            string type = (mode == "40000") ? "tree" : "blob"; // <-- FIXED
+
+            if (nameOnly) {
+                cout << name << "\n";
+            } else {
+                cout << mode << " " << type << " " << entrySha
+                     << "\t" << name << "\n";
+            }
         }
     }
-}
 
+    /* ---------- write-tree (ADDED) ---------- */
+    else if (command == "write-tree") {
+        cout << writeTree(".") << "\n";
+    }
 
     else {
         cerr << "Unknown command\n";
