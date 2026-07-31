@@ -9,7 +9,6 @@
 #include <map>
 #include <zlib.h>
 #include <openssl/sha.h>
-#include <curl/curl.h>
 
 using namespace std;
 
@@ -153,91 +152,6 @@ string commitTree(const string& tree,
     return sha;
 }
 
-/* ===================== HTTP ===================== */
-
-size_t curlWrite(void* ptr, size_t s, size_t n, string* out) {
-    out->append((char*)ptr, s*n);
-    return s*n;
-}
-
-string httpGet(const string& url) {
-    CURL* c = curl_easy_init();
-    string out;
-    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curlWrite);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, &out);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "git/codecrafters");
-    curl_easy_perform(c);
-    curl_easy_cleanup(c);
-    return out;
-}
-
-string httpPost(const string& url, const string& body) {
-    CURL* c = curl_easy_init();
-    string out;
-    struct curl_slist* h = nullptr;
-    h = curl_slist_append(h, "Content-Type: application/x-git-upload-pack-request");
-    curl_easy_setopt(c, CURLOPT_HTTPHEADER, h);
-    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.data());
-    curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, body.size());
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curlWrite);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, &out);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "git/codecrafters");
-    curl_easy_perform(c);
-    curl_slist_free_all(h);
-    curl_easy_cleanup(c);
-    return out;
-}
-
-/* ===================== PACK (simplified, no deltas) ===================== */
-
-void parsePack(const string& pack) {
-    size_t pos = 12;
-    uint32_t n =
-        (unsigned char)pack[8]<<24 |
-        (unsigned char)pack[9]<<16 |
-        (unsigned char)pack[10]<<8 |
-        (unsigned char)pack[11];
-
-    for (uint32_t i = 0; i < n; i++) {
-        unsigned char b = pack[pos++];
-        int type = (b >> 4) & 7;
-        size_t size = b & 0xf;
-        int shift = 4;
-        while (b & 0x80) {
-            b = pack[pos++];
-            size |= (b & 0x7f) << shift;
-            shift += 7;
-        }
-
-        z_stream zs{};
-        inflateInit(&zs);
-        zs.next_in = (Bytef*)(pack.data() + pos);
-        zs.avail_in = pack.size() - pos;
-
-        string data;
-        char buf[4096];
-        int r;
-        do {
-            zs.next_out = (Bytef*)buf;
-            zs.avail_out = sizeof(buf);
-            r = inflate(&zs, Z_NO_FLUSH);
-            data.append(buf, sizeof(buf) - zs.avail_out);
-        } while (r == Z_OK);
-
-        pos += zs.total_in;
-        inflateEnd(&zs);
-
-        string typeStr =
-            type==1?"commit":type==2?"tree":"blob";
-
-        string obj = typeStr + " " + to_string(data.size()) + '\0' + data;
-        string sha = sha1(obj);
-        writeObject(sha, obj);
-    }
-}
-
 /* ===================== CHECKOUT ===================== */
 
 void checkoutTree(const string& sha, const filesystem::path& dir) {
@@ -262,47 +176,6 @@ void checkoutTree(const string& sha, const filesystem::path& dir) {
             ofstream(p, ios::binary).write(c.data(), c.size());
         }
     }
-}
-
-/* ===================== CLONE ===================== */
-
-void cloneRepo(const string& url, const string& dir) {
-    filesystem::create_directories(dir);
-    GIT_DIR = dir + "/.git";
-    filesystem::create_directories(GIT_DIR + "/objects");
-    filesystem::create_directories(GIT_DIR + "/refs/heads");
-
-    string refs = httpGet(url + "/info/refs?service=git-upload-pack");
-
-    string head;
-    for (size_t i=0;i+4<refs.size();) {
-        int len = stoi(refs.substr(i,4),0,16);
-        i+=4;
-        if (len==0) continue;
-        string l = refs.substr(i,len-4);
-        if (l.find("refs/heads/")!=string::npos)
-            head = l.substr(0,40);
-        i+=len-4;
-    }
-
-    string req = "0032want " + head + "\n00000009done\n";
-    string resp = httpPost(url + "/git-upload-pack", req);
-
-    size_t p = resp.find("PACK");
-    parsePack(resp.substr(p));
-
-    ofstream(GIT_DIR + "/HEAD") << "ref: refs/heads/main\n";
-    ofstream(GIT_DIR + "/refs/heads/main") << head << "\n";
-
-    auto [__, commit] = readObject(head);
-    string tree;
-    istringstream iss(commit);
-    string line;
-    while (getline(iss,line))
-        if (line.rfind("tree ",0)==0)
-            tree=line.substr(5);
-
-    checkoutTree(tree, dir);
 }
 
 /* ===================== MAIN ===================== */
@@ -369,11 +242,6 @@ while (pos < d.size()) {
     else if (c=="write-tree") cout<<writeTree(".")<<"\n";
     else if (c=="commit-tree") {
         cout<<commitTree(argv[2], argv[4], argv[6])<<"\n";
-    }
-    else if (c=="clone") {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-        cloneRepo(argv[2], argv[3]);
-        curl_global_cleanup();
     }
     else {
     cerr << "Unknown command: " << c << "\n";
