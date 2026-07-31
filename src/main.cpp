@@ -245,7 +245,7 @@ while (pos < d.size()) {
     }
     else {
     cerr << "Unknown command: " << c << "\n";
-    cerr << "Supported commands: init, hash-object, cat-file, ls-tree, write-tree, commit-tree, clone\n";
+    cerr << "Supported commands: init, hash-object, cat-file, ls-tree, write-tree, commit-tree\n";
     return EXIT_FAILURE;
 }
 
