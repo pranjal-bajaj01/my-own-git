@@ -13,12 +13,7 @@ add_executable(git
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
 
-# libcurl is NOT always exported as CURL::libcurl in Codecrafters,
-# so we link it explicitly.
-find_library(CURL_LIB curl REQUIRED)
-
 target_link_libraries(git
-    ${CURL_LIB}
     OpenSSL::SSL
     OpenSSL::Crypto
     ZLIB::ZLIB
